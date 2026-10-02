@@ -2,15 +2,18 @@ extern "C" {
 #include "addon_api.h"
 }
 
-extern "C" {
+// Luau's headers already declare their API with C linkage, so they must not
+// be wrapped in extern "C" here.
 #include <lua.h>
-#include <lauxlib.h>
 #include <lualib.h>
-}
+#include <luacode.h>
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -18,7 +21,7 @@ extern "C" {
 namespace bpa {
 namespace {
 
-constexpr const char* scriptsDir = "lua_scripts";
+constexpr const char* scriptsDir = "luau";
 
 const bp_api* g_api = nullptr;
 bp_world* g_world = nullptr; // Best-effort fallback world, kept fresh by any event/call that hands us one.
@@ -56,8 +59,11 @@ private:
     lua_State* L_ = nullptr;
 };
 
+// Each plugin owns an isolated Luau VM
 struct Plugin {
-    LuaState state;
+    LuaState state;            // main thread, owns the VM
+    lua_State* script = nullptr; // sandboxed thread that scripts run on
+    int scriptRef = LUA_NOREF; // keeps `script` alive across GC
     std::string name;
 };
 
@@ -237,8 +243,6 @@ int lua_world_sendBlockUpdate(lua_State* L) {
     return 0;
 }
 // Best-effort world handle for events that don't carry one directly
-// (e.g. OnPlayerJoin, OnPlayerChat). Kept fresh by any event/call that
-// does hand us a world; nil if none has been seen yet.
 int lua_world_getCurrent(lua_State* L) {
     if (!g_world) { lua_pushnil(L); return 1; }
     lua_pushlightuserdata(L, g_world);
@@ -249,8 +253,7 @@ int lua_world_getCurrent(lua_State* L) {
 int lua_data_setPlayer(lua_State* L) {
     bp_player* player = static_cast<bp_player*>(checkHandle(L, 1, "Expected a player handle"));
     luaL_checkany(L, 2);
-    lua_pushvalue(L, 2);
-    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    int ref = lua_ref(L, 2); // does not pop; nil yields LUA_REFNIL (0), which reads back as nil
     g_api->data.setPlayer(g_api, player, reinterpret_cast<void*>(static_cast<intptr_t>(ref)));
     return 0;
 }
@@ -258,7 +261,7 @@ int lua_data_getPlayer(lua_State* L) {
     bp_player* player = static_cast<bp_player*>(checkHandle(L, 1, "Expected a player handle"));
     void* raw = g_api->data.getPlayer(g_api, player);
     if (!raw) { lua_pushnil(L); return 1; }
-    lua_rawgeti(L, LUA_REGISTRYINDEX, static_cast<lua_Integer>(reinterpret_cast<intptr_t>(raw)));
+    lua_getref(L, static_cast<int>(reinterpret_cast<intptr_t>(raw)));
     return 1;
 }
 
@@ -301,56 +304,105 @@ const luaL_Reg lua_data_fns[] = {
     {nullptr, nullptr}
 };
 
+void registerLib(lua_State* L, const char* name, const luaL_Reg* fns) {
+    lua_newtable(L);
+    luaL_register(L, nullptr, fns); // libname == NULL: fill the table on top of the stack
+    lua_setglobal(L, name);
+}
+
 void registerApi(lua_State* L) {
-    luaL_newlib(L, lua_log_fns);    lua_setglobal(L, "log");
-    luaL_newlib(L, lua_server_fns); lua_setglobal(L, "server");
-    luaL_newlib(L, lua_player_fns); lua_setglobal(L, "player");
-    luaL_newlib(L, lua_entity_fns); lua_setglobal(L, "entity");
-    luaL_newlib(L, lua_world_fns);  lua_setglobal(L, "world");
-    luaL_newlib(L, lua_data_fns);   lua_setglobal(L, "data");
+    registerLib(L, "log",    lua_log_fns);
+    registerLib(L, "server", lua_server_fns);
+    registerLib(L, "player", lua_player_fns);
+    registerLib(L, "entity", lua_entity_fns);
+    registerLib(L, "world",  lua_world_fns);
+    registerLib(L, "data",   lua_data_fns);
+}
+
+bool readFile(const std::filesystem::path& path, std::string& out) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    out = ss.str();
+    return true;
+}
+
+bool loadAndRun(lua_State* L, const std::string& source, const std::string& chunkName) {
+    lua_CompileOptions opts = {};
+    opts.optimizationLevel = 1; // baseline optimizations that don't hinder debugging
+    opts.debugLevel = 1;        // line info, so runtime errors report file:line
+
+    size_t bytecodeSize = 0;
+    char* bytecode = luau_compile(source.data(), source.size(), &opts, &bytecodeSize);
+    int status = luau_load(L, chunkName.c_str(), bytecode, bytecodeSize, 0);
+    std::free(bytecode);
+    if (status != 0) return false; // compile/load error message is on the stack
+
+    return lua_pcall(L, 0, 0, 0) == LUA_OK;
 }
 
 void loadPluginFile(const std::filesystem::path& path) {
     lua_State* raw = luaL_newstate();
     if (!raw) {
-        g_api->log.error(g_api, "Failed to create Lua state");
+        g_api->log.error(g_api, "Failed to create Luau state");
         return;
     }
     LuaState state(raw);
 
-    luaL_openlibs(state.get());
-    registerApi(state.get());
+    luaL_openlibs(raw);
+    registerApi(raw);
 
-    if (luaL_dofile(state.get(), path.string().c_str()) != LUA_OK) {
-        g_api->log.error(g_api, lua_tostring(state.get(), -1));
-        return; // `state` destructor closes the Lua state
+    // Lock down the standard library and our API tables
+    luaL_sandbox(raw);
+    lua_State* script = lua_newthread(raw);
+    luaL_sandboxthread(script);
+    int scriptRef = lua_ref(raw, -1); // anchor the thread so GC can't collect it
+    lua_pop(raw, 1);
+
+    std::string source;
+    if (!readFile(path, source)) {
+        std::string msg = "Failed to read '" + path.string() + "'";
+        g_api->log.error(g_api, msg.c_str());
+        return;
     }
 
     std::string name = path.filename().string();
+    if (!loadAndRun(script, source, "@" + name)) {
+        g_api->log.error(g_api, lua_tostring(script, -1));
+        return; // `state` destructor closes the Luau VM
+    }
+
     std::string msg = "Loaded plugin '" + name + "'";
     g_api->log.info(g_api, msg.c_str());
 
-    g_plugins.push_back(Plugin{std::move(state), std::move(name)});
+    Plugin plugin;
+    plugin.state = std::move(state);
+    plugin.script = script;
+    plugin.scriptRef = scriptRef;
+    plugin.name = std::move(name);
+    g_plugins.push_back(std::move(plugin));
 }
 
 void loadAllPlugins() {
     std::error_code ec;
     if (!std::filesystem::is_directory(scriptsDir, ec)) {
-        g_api->log.warning(g_api, "No 'lua_scripts' directory found, no plugins loaded");
+        g_api->log.warning(g_api, "No 'luau' directory found, no plugins loaded");
         return;
     }
 
     for (const auto& entry : std::filesystem::directory_iterator(scriptsDir, ec)) {
         if (!entry.is_regular_file()) continue;
-        if (entry.path().extension() != ".lua") continue;
+        const auto ext = entry.path().extension();
+        if (ext != ".luau" && ext != ".lua") continue;
         loadPluginFile(entry.path());
     }
 }
 
 void unloadAllPlugins() {
     for (auto& plugin : g_plugins) {
-        if (getGlobalFunction(plugin.state.get(), "OnUnload")) {
-            callWithReport(plugin.state.get(), 0, 0);
+        if (getGlobalFunction(plugin.script, "OnUnload")) {
+            callWithReport(plugin.script, 0, 0);
         }
     }
     g_plugins.clear(); // each Plugin's LuaState destructor closes its lua_State
@@ -361,7 +413,7 @@ extern "C" {
 
 void OnPlayerJoin(const bp_api* /*api*/, const bp_player_join_event* ev) {
     for (auto& plugin : g_plugins) {
-        lua_State* L = plugin.state.get();
+        lua_State* L = plugin.script;
         if (!getGlobalFunction(L, "OnPlayerJoin")) continue;
 
         lua_pushlightuserdata(L, ev->player);
@@ -371,7 +423,7 @@ void OnPlayerJoin(const bp_api* /*api*/, const bp_player_join_event* ev) {
 
 void OnPlayerLeave(const bp_api* /*api*/, const bp_player_leave_event* ev) {
     for (auto& plugin : g_plugins) {
-        lua_State* L = plugin.state.get();
+        lua_State* L = plugin.script;
         if (!getGlobalFunction(L, "OnPlayerLeave")) continue;
 
         lua_pushlightuserdata(L, ev->player);
@@ -381,7 +433,7 @@ void OnPlayerLeave(const bp_api* /*api*/, const bp_player_leave_event* ev) {
 
 void OnPlayerMove(const bp_api* /*api*/, bp_player_move_event* ev) {
     for (auto& plugin : g_plugins) {
-        lua_State* L = plugin.state.get();
+        lua_State* L = plugin.script;
         if (!getGlobalFunction(L, "OnPlayerMove")) continue;
 
         lua_pushlightuserdata(L, ev->player);
@@ -395,7 +447,7 @@ void OnPlayerMove(const bp_api* /*api*/, bp_player_move_event* ev) {
 
 void OnItemUse(const bp_api* /*api*/, bp_item_use_event* ev) {
     for (auto& plugin : g_plugins) {
-        lua_State* L = plugin.state.get();
+        lua_State* L = plugin.script;
         if (!getGlobalFunction(L, "OnItemUse")) continue;
 
         lua_pushlightuserdata(L, ev->player);
@@ -410,7 +462,7 @@ void OnBlockUse(const bp_api* /*api*/, bp_block_use_event* ev) {
     g_world = ev->world; // fallback world context, kept fresh here too
 
     for (auto& plugin : g_plugins) {
-        lua_State* L = plugin.state.get();
+        lua_State* L = plugin.script;
         if (!getGlobalFunction(L, "OnBlockUse")) continue;
 
         lua_pushlightuserdata(L, ev->player);
@@ -428,7 +480,7 @@ void OnBlockBreak(const bp_api* /*api*/, bp_block_break_event* ev) {
     g_world = ev->world; // fallback world context, kept fresh here too
 
     for (auto& plugin : g_plugins) {
-        lua_State* L = plugin.state.get();
+        lua_State* L = plugin.script;
         if (!getGlobalFunction(L, "OnBlockBreak")) continue;
 
         lua_pushlightuserdata(L, ev->player);
@@ -448,7 +500,7 @@ void OnBlockPlace(const bp_api* /*api*/, bp_block_place_event* ev) {
     g_world = ev->world; // fallback world context, kept fresh here too
 
     for (auto& plugin : g_plugins) {
-        lua_State* L = plugin.state.get();
+        lua_State* L = plugin.script;
         if (!getGlobalFunction(L, "OnBlockPlace")) continue;
 
         lua_pushlightuserdata(L, ev->player);
@@ -465,7 +517,7 @@ void OnBlockPlace(const bp_api* /*api*/, bp_block_place_event* ev) {
 
 void OnEntityDamage(const bp_api* /*api*/, bp_entity_damage_event* ev) {
     for (auto& plugin : g_plugins) {
-        lua_State* L = plugin.state.get();
+        lua_State* L = plugin.script;
         if (!getGlobalFunction(L, "OnEntityDamage")) continue;
 
         lua_pushlightuserdata(L, ev->entity);
@@ -478,7 +530,7 @@ void OnEntityDamage(const bp_api* /*api*/, bp_entity_damage_event* ev) {
 
 void OnServerTick(const bp_api* /*api*/, const bp_server_tick_event* /*ev*/) {
     for (auto& plugin : g_plugins) {
-        lua_State* L = plugin.state.get();
+        lua_State* L = plugin.script;
         if (!getGlobalFunction(L, "OnServerTick")) continue;
         callWithReport(L, 0, 0);
     }
@@ -486,7 +538,7 @@ void OnServerTick(const bp_api* /*api*/, const bp_server_tick_event* /*ev*/) {
 
 void OnPlayerChat(const bp_api* /*api*/, bp_player_chat_event* ev) {
     for (auto& plugin : g_plugins) {
-        lua_State* L = plugin.state.get();
+        lua_State* L = plugin.script;
         if (!getGlobalFunction(L, "OnPlayerChat")) continue;
 
         lua_pushlightuserdata(L, ev->player);
@@ -502,14 +554,14 @@ void OnLoad(const bp_api* api, const bp_addon_load* /*ev*/) {
 
     loadAllPlugins();
 
-    std::string msg = "Lua initialized! (" +
+    std::string msg = "Luau initialized! (" +
         std::to_string(g_plugins.size()) + " plugin(s) loaded)";
     api->log.info(api, msg.c_str());
 }
 
 void OnUnload(const bp_api* api, const bp_addon_unload* /*ev*/) {
     unloadAllPlugins();
-    api->log.info(api, "Lua uninitialized!");
+    api->log.info(api, "Luau uninitialized!");
 }
 
 } // extern "C"
@@ -520,8 +572,8 @@ void OnUnload(const bp_api* api, const bp_addon_unload* /*ev*/) {
 extern "C" bp_addon_info bp_addon(const bp_api* /*api*/) {
     return bp_addon_info{
         "bpa_lua",
-        "Lua",
-        "0.0.1",
+        "Luau",
+        "0.1.0",
         bp_addon_events{
             /* playerJoin   */ bpa::OnPlayerJoin,
             /* playerLeave  */ bpa::OnPlayerLeave,

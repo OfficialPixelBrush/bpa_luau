@@ -1,26 +1,49 @@
-# bpa_lua
-Lua Integration for Betrock++ Addon System
+# bpa_luau
+[Luau](https://luau.org/) integration for the Betrock++ addon system.
 
 ## Compilation
 
-One command, no build system required. You'll need Lua's headers/library
-installed first (e.g. `apt install liblua5.4-dev`, `brew install lua`, or
-MSYS2's `mingw-w64-x86_64-lua`).
+Since Luau isn't shipped by most Distros or similar, it needs to get compiled from scratch first.
+
+```bash
+git clone https://github.com/luau-lang/luau.git
+cd luau
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+      -DLUAU_BUILD_CLI=OFF -DLUAU_BUILD_TESTS=OFF
+cmake --build build --target Luau.VM Luau.Compiler Luau.Ast Luau.Bytecode Luau.Common
+```
+
+Then build the addon, pointing at that checkout (`LUAU=/path/to/luau`,
+`LIBS=$LUAU/build`; on Windows/MSVC the library layout differs):
 
 ### Linux
 
 ```bash
-g++ -std=c++17 -shared -fPIC src/bpa_lua.cpp -o bpa_lua.so $(pkg-config --cflags --libs lua)
+LUAU=/path/to/luau
+g++ -std=c++17 -shared -fPIC src/bpa_luau.cpp -o bpa_luau.so \
+    -I$LUAU/VM/include -I$LUAU/Compiler/include \
+    $LUAU/build/libLuau.Compiler.a $LUAU/build/libLuau.Bytecode.a \
+    $LUAU/build/libLuau.Ast.a $LUAU/build/libLuau.VM.a $LUAU/build/libLuau.Common.a
 ```
 
 ### macOS
 
 ```bash
-g++ -std=c++17 -shared -fPIC -undefined dynamic_lookup src/bpa_lua.cpp -o bpa_lua.so $(pkg-config --cflags --libs lua)
+LUAU=/path/to/luau
+g++ -std=c++17 -shared -fPIC -undefined dynamic_lookup src/bpa_luau.cpp -o bpa_luau.so \
+    -I$LUAU/VM/include -I$LUAU/Compiler/include \
+    $LUAU/build/libLuau.Compiler.a $LUAU/build/libLuau.Bytecode.a \
+    $LUAU/build/libLuau.Ast.a $LUAU/build/libLuau.VM.a $LUAU/build/libLuau.Common.a
 ```
 
 ### Windows (MSYS2 MinGW64 shell)
 
 ```bash
-g++ -std=c++17 -shared src/bpa_lua.cpp -o bpa_lua.dll $(pkg-config --cflags --libs lua)
+LUAU=/path/to/luau
+g++ -std=c++17 -shared src/bpa_luau.cpp -o bpa_luau.dll \
+    -I$LUAU/VM/include -I$LUAU/Compiler/include \
+    $LUAU/build/libLuau.Compiler.a $LUAU/build/libLuau.Bytecode.a \
+    $LUAU/build/libLuau.Ast.a $LUAU/build/libLuau.VM.a $LUAU/build/libLuau.Common.a
 ```
+
+See `examples/example.luau` for a script that touches every event.
