@@ -571,7 +571,7 @@ void OnUnload(const bp_api* api, const bp_addon_unload* /*ev*/) {
 
 extern "C" bp_addon_info bp_addon(const bp_api* /*api*/) {
     return bp_addon_info{
-        "bpa_lua",
+        "bpa_luau",
         "Luau",
         "0.1.0",
         bp_addon_events{
