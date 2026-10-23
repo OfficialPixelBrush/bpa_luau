@@ -1,4 +1,5 @@
 # bpa_luau
+
 [Luau](https://luau.org/) integration for the Betrock++ addon system.
 
 ## Compilation
@@ -47,3 +48,20 @@ g++ -std=c++17 -shared src/bpa_luau.cpp -o bpa_luau.dll \
 ```
 
 See `examples/example.luau` for a script that touches every event.
+
+## Lua API
+
+| Namespace  | Functions                                                                                                                     |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `log`      | `info(msg)`, `warning(msg)`, `error(msg)`                                                                                     |
+| `server`   | `getPlayerCount()`, `getPlayerAt(index)`, `stop(timeout?)`, `getMsptAverage()`, `getTpsAverage()`, `getVersion()`             |
+| `player`   | `sendMessage(player, msg)`, `kick(player, reason?)`, `getUsername(player)`, `getEntity(player)`                               |
+| `entity`   | `getPosition(entity)`, `setPosition(entity, x, y, z)`, `getWorld(entity)`                                                     |
+| `world`    | `getBlock(world, x, y, z)`, `setBlock(world, x, y, z, id, meta)`, `sendBlockUpdate(world, x, y, z, id, meta)`, `getCurrent()` |
+| `data`     | `setPlayer(player, value)`, `getPlayer(player)`                                                                               |
+| `commands` | `execute(sender, command)` returns `boolean`; `sender` is a player handle, or `nil` for no player                             |
+
+Script callbacks: `OnPlayerJoin`, `OnPlayerLeave`, `OnPlayerChat`, `OnPlayerMove`, `OnItemUse`,
+`OnBlockUse`, `OnBlockBreak`, `OnBlockPlace`, `OnEntityDamage`, `OnServerTick`, `OnCrash`, `OnUnload`.
+
+`OnCrash(crashLog, crashLogPath, version)` receives strings (or `nil` for any the server leaves unset) and can't cancel anything.

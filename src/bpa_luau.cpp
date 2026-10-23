@@ -148,6 +148,24 @@ int lua_server_getPlayerAt(lua_State* L) {
     lua_pushlightuserdata(L, player);
     return 1;
 }
+int lua_server_stop(lua_State* L) {
+    // Optional timeout (the API takes a float); defaults to 0.
+    float timeout = static_cast<float>(luaL_optnumber(L, 1, 0.0));
+    g_api->server.stop(g_api, timeout);
+    return 0;
+}
+int lua_server_getMsptAverage(lua_State* L) {
+    lua_pushnumber(L, g_api->server.getMsptAverage(g_api));
+    return 1;
+}
+int lua_server_getTpsAverage(lua_State* L) {
+    lua_pushnumber(L, g_api->server.getTpsAverage(g_api));
+    return 1;
+}
+int lua_server_getVersion(lua_State* L) {
+    lua_pushstring(L, g_api->server.getVersion()); // NULL becomes nil
+    return 1;
+}
 
 // player.*
 int lua_player_sendMessage(lua_State* L) {
@@ -265,6 +283,19 @@ int lua_data_getPlayer(lua_State* L) {
     return 1;
 }
 
+// commands.*
+int lua_commands_execute(lua_State* L) {
+    // The sender is a player handle, or nil to run the command without a
+    // player sender (e.g. as the server/console).
+    bp_player* sender = nullptr;
+    if (!lua_isnoneornil(L, 1)) {
+        sender = static_cast<bp_player*>(checkHandle(L, 1, "Expected a player handle or nil"));
+    }
+    const char* command = luaL_checkstring(L, 2);
+    lua_pushboolean(L, g_api->commands.execute(g_api, sender, command));
+    return 1;
+}
+
 } // extern "C"
 
 const luaL_Reg lua_log_fns[] = {
@@ -276,6 +307,10 @@ const luaL_Reg lua_log_fns[] = {
 const luaL_Reg lua_server_fns[] = {
     {"getPlayerCount", lua_server_getPlayerCount},
     {"getPlayerAt", lua_server_getPlayerAt},
+    {"stop", lua_server_stop},
+    {"getMsptAverage", lua_server_getMsptAverage},
+    {"getTpsAverage", lua_server_getTpsAverage},
+    {"getVersion", lua_server_getVersion},
     {nullptr, nullptr}
 };
 const luaL_Reg lua_player_fns[] = {
@@ -303,6 +338,10 @@ const luaL_Reg lua_data_fns[] = {
     {"getPlayer", lua_data_getPlayer},
     {nullptr, nullptr}
 };
+const luaL_Reg lua_commands_fns[] = {
+    {"execute", lua_commands_execute},
+    {nullptr, nullptr}
+};
 
 void registerLib(lua_State* L, const char* name, const luaL_Reg* fns) {
     lua_newtable(L);
@@ -317,6 +356,7 @@ void registerApi(lua_State* L) {
     registerLib(L, "entity", lua_entity_fns);
     registerLib(L, "world",  lua_world_fns);
     registerLib(L, "data",   lua_data_fns);
+    registerLib(L, "commands", lua_commands_fns);
 }
 
 bool readFile(const std::filesystem::path& path, std::string& out) {
@@ -549,6 +589,20 @@ void OnPlayerChat(const bp_api* /*api*/, bp_player_chat_event* ev) {
     }
 }
 
+// Fired when the server crashes. Scripts get (crashLog, crashLogPath, version);
+// any field the server doesn't provide arrives as nil. Nothing can be cancelled.
+void OnCrash(const bp_api* /*api*/, const bp_crash_event* ev) {
+    for (auto& plugin : g_plugins) {
+        lua_State* L = plugin.script;
+        if (!getGlobalFunction(L, "OnCrash")) continue;
+
+        lua_pushstring(L, ev->crash_log);
+        lua_pushstring(L, ev->crash_log_path);
+        lua_pushstring(L, ev->version_string);
+        callWithReport(L, 3, 0);
+    }
+}
+
 void OnLoad(const bp_api* api, const bp_addon_load* /*ev*/) {
     g_api = api;
 
@@ -585,6 +639,7 @@ extern "C" bp_addon_info bp_addon(const bp_api* /*api*/) {
             /* blockUse     */ bpa::OnBlockUse,
             /* entityDamage */ bpa::OnEntityDamage,
             /* serverTick   */ bpa::OnServerTick,
+            /* crash        */ bpa::OnCrash,
             /* addonLoad    */ bpa::OnLoad,
             /* addonUnload  */ bpa::OnUnload,
         },

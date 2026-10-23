@@ -1,5 +1,7 @@
 /*
  * Copyright (c) 2026, jwaxy <jwaxy.is-a.dev>
+ * Copyright (c) 2026, Anya Rihtarshich <vesui@proton.me>
+ * Copyright (c) 2026, Pixel Brush <pixelbrush.dev>
  *
  * SPDX-License-Identifier: AGPL-3.0-only
  *
@@ -58,6 +60,10 @@ struct bp_api {
 		int (*getPlayerCount)(const bp_api* api);
 		// Used with getPlayerCount
 		bp_player* (*getPlayerAt)(const bp_api* api, int index);
+		void (*stop)(const bp_api* api, float timeout);
+		double (*getMsptAverage)(const bp_api* api);
+		double (*getTpsAverage)(const bp_api* api);
+		const char* (*getVersion)();
 	} server;
 
 	struct {
@@ -83,6 +89,10 @@ struct bp_api {
 		void (*setPlayer)(const bp_api* api, bp_player* player, void* _data);
 		void* (*getPlayer)(const bp_api* api, bp_player* player);
 	} data;
+
+	struct {
+		bool (*execute)(const bp_api* api, bp_player* sender, const char* command);
+	} commands;
 };
 
 typedef struct {
@@ -155,6 +165,12 @@ typedef struct {
 } bp_server_tick_event;
 
 typedef struct {
+	char* crash_log;
+	char* crash_log_path;
+	char* version_string;
+} bp_crash_event;
+
+typedef struct {
 } bp_addon_load;
 
 typedef struct {
@@ -170,6 +186,7 @@ typedef void (*bp_block_break_fn)(const bp_api* api, bp_block_break_event* event
 typedef void (*bp_block_place_fn)(const bp_api* api, bp_block_place_event* event);
 typedef void (*bp_entity_damage_fn)(const bp_api* api, bp_entity_damage_event* event);
 typedef void (*bp_server_tick_fn)(const bp_api* api, const bp_server_tick_event* event);
+typedef void (*bp_crash_event_fn)(const bp_api* api, const bp_crash_event* event);
 typedef void (*bp_addon_load_fn)(const bp_api* api, const bp_addon_load* event);
 typedef void (*bp_addon_unload_fn)(const bp_api* api, const bp_addon_unload* event);
 
@@ -184,6 +201,7 @@ typedef struct {
 	bp_block_use_fn blockUse;
 	bp_entity_damage_fn entityDamage;
 	bp_server_tick_fn serverTick;
+	bp_crash_event_fn crash;
 	bp_addon_load_fn addonLoad;
 	bp_addon_unload_fn addonUnload;
 } bp_addon_events;
