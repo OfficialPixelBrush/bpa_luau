@@ -7,6 +7,7 @@ type Block = { id: number, meta: number }
 type ItemStack = { id: number, count: number, data: number }
 
 log.info("Loaded!")
+log.info(`Running on server version {server.getVersion()}`)
 
 function OnPlayerJoin(playerHandle: Handle)
     player.sendMessage(playerHandle, "Welcome to the server!")
@@ -22,6 +23,20 @@ function OnPlayerChat(playerHandle: Handle, message: string): boolean?
     -- Returning false cancels the chat message.
     if message == "banned word" then
         player.sendMessage(playerHandle, "Watch your language!")
+        return false
+    end
+
+    -- Run a server command on the player's behalf. Pass nil as the sender
+    -- to run it without a player.
+    if message == "!tps" then
+        player.sendMessage(playerHandle, string.format("TPS: %.1f, MSPT: %.2f",
+            server.getTpsAverage(), server.getMsptAverage()))
+        return false
+    end
+
+    if message == "!stop" then
+        local ok = commands.execute(playerHandle, "stop")
+        player.sendMessage(playerHandle, ok and "Command executed" or "Command failed")
         return false
     end
 
@@ -79,6 +94,11 @@ end
 local tickCount = 0
 function OnServerTick()
     tickCount += 1
+end
+
+-- Fired when the server crashes; fields the server doesn't provide are nil.
+function OnCrash(crashLog: string?, crashLogPath: string?, version: string?)
+    log.error(`Server crashed on version {version or "?"}, log at {crashLogPath or "?"}`)
 end
 
 function OnUnload()
