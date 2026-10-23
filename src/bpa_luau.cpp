@@ -23,7 +23,7 @@ namespace {
 
 constexpr const char* ADDON_ID = "bpa_luau";
 constexpr const char* ADDON_NAME = "Luau";
-constexpr const char* ADDON_VERSION = "0.1.0"; // keep in sync with the release tag (checked by CI)
+constexpr const char* ADDON_VERSION = "0.1.1"; // keep in sync with the release tag (checked by CI)
 
 constexpr const char* scriptsDir = "luau";
 
