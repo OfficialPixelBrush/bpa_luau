@@ -4,48 +4,26 @@
 
 ## Compilation
 
-Since Luau isn't shipped by most Distros or similar, it needs to get compiled from scratch first.
+Requires a C++17 compiler and CMake 3.16+. Luau is downloaded and built from
+source automatically, then linked statically into the addon, so there is nothing
+else to install. Works with GCC/Clang on Linux and macOS and MSVC on Windows.
 
 ```bash
-git clone https://github.com/luau-lang/luau.git
-cd luau
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-      -DLUAU_BUILD_CLI=OFF -DLUAU_BUILD_TESTS=OFF
-cmake --build build --target Luau.VM Luau.Compiler Luau.Ast Luau.Bytecode Luau.Common
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target bpa_luau --config Release
 ```
 
-Then build the addon, pointing at that checkout (`LUAU=/path/to/luau`,
-`LIBS=$LUAU/build`; on Windows/MSVC the library layout differs):
+This produces `bpa_luau.so` (`bpa_luau.dll` on Windows). On Windows with the Visual Studio
+generator the DLL ends up in `build/Release/`. To build against an existing Luau checkout instead
+of downloading one, add `-DFETCHCONTENT_SOURCE_DIR_LUAU=/path/to/luau`.
 
-### Linux
+`addon_api.h` must match the `include/addon_api.h` of the Betrock++ build you run it on.
 
-```bash
-LUAU=/path/to/luau
-g++ -std=c++17 -shared -fPIC src/bpa_luau.cpp -o bpa_luau.so \
-    -I$LUAU/VM/include -I$LUAU/Compiler/include \
-    $LUAU/build/libLuau.Compiler.a $LUAU/build/libLuau.Bytecode.a \
-    $LUAU/build/libLuau.Ast.a $LUAU/build/libLuau.VM.a $LUAU/build/libLuau.Common.a
-```
+### Releases
 
-### macOS
-
-```bash
-LUAU=/path/to/luau
-g++ -std=c++17 -shared -fPIC -undefined dynamic_lookup src/bpa_luau.cpp -o bpa_luau.so \
-    -I$LUAU/VM/include -I$LUAU/Compiler/include \
-    $LUAU/build/libLuau.Compiler.a $LUAU/build/libLuau.Bytecode.a \
-    $LUAU/build/libLuau.Ast.a $LUAU/build/libLuau.VM.a $LUAU/build/libLuau.Common.a
-```
-
-### Windows (MSYS2 MinGW64 shell)
-
-```bash
-LUAU=/path/to/luau
-g++ -std=c++17 -shared src/bpa_luau.cpp -o bpa_luau.dll \
-    -I$LUAU/VM/include -I$LUAU/Compiler/include \
-    $LUAU/build/libLuau.Compiler.a $LUAU/build/libLuau.Bytecode.a \
-    $LUAU/build/libLuau.Ast.a $LUAU/build/libLuau.VM.a $LUAU/build/libLuau.Common.a
-```
+The `Build & Release Addon` GitHub Actions workflow is run manually and builds Windows
+(x86_64, arm64), Linux (x86_64, aarch64) and macOS (arm64) binaries. The tag you enter must match
+`ADDON_VERSION` in `src/bpa_luau.cpp`.
 
 See `examples/example.luau` for a script that touches every event.
 

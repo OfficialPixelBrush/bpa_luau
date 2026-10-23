@@ -1,16 +1,21 @@
-name: Build & Release
+name: Build & Release Addon
 
-# Manual-only. Lets you type the release notes at trigger-time and builds
-# the addon module for 5 targets, then publishes one GitHub Release with
-# all the binaries attached.
+# Manual-only. Builds the bpa_luau addon for 5 targets and publishes one
+# GitHub Release with all the binaries attached.
+#
+# Luau is fetched and built from source by CMake (see CMakeLists.txt) and linked
+# statically into the addon, so the release archives have no runtime dependencies.
 on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: "Tag for this release (e.g. v1.0)"
+        description: "Tag for this release (e.g. v0.1.0)"
         required: true
       release_name:
         description: "Release title (leave blank to reuse the tag)"
+        required: false
+      release_notes:
+        description: "Release notes (leave blank to auto-generate from commits)"
         required: false
       draft:
         description: "Create as a draft (review before publishing)"
@@ -24,126 +29,231 @@ on:
         default: false
 
 env:
-  BINARY_NAME: bpa_lua
-  LUA_VERSION: "5.4"
+  ADDON_NAME: bpa_luau
 
 permissions:
   contents: write
 
 concurrency:
-  group: build-release-${{ github.run_id }}
+  group: build-release-bpa-luau-${{ github.run_id }}
   cancel-in-progress: false
 
 jobs:
   # ---------------------------------------------------------------------
-  # Linux x86_64 (glibc) - native
+  # Sanity check: tag_name must match ADDON_VERSION in src/bpa_luau.cpp
+  # ---------------------------------------------------------------------
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag_name matches ADDON_VERSION
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag_name }}"
+          TAG_VERSION="${TAG#v}"  # strip a leading "v" (v0.1.0 -> 0.1.0)
+
+          ADDON_VERSION=$(sed -nE 's/.*ADDON_VERSION[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' src/bpa_luau.cpp | head -n1)
+
+          if [ -z "$ADDON_VERSION" ]; then
+            echo "::error::Could not find ADDON_VERSION in src/bpa_luau.cpp"
+            exit 1
+          fi
+
+          echo "tag_name:      $TAG"
+          echo "tag version:   $TAG_VERSION"
+          echo "addon version: $ADDON_VERSION"
+
+          if [ "$TAG_VERSION" != "$ADDON_VERSION" ]; then
+            echo "::error::tag_name '${TAG}' implies version '${TAG_VERSION}', but src/bpa_luau.cpp has ADDON_VERSION '${ADDON_VERSION}'. Bump ADDON_VERSION or fix the tag before releasing."
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------
+  # Windows x86_64 (MSVC, native GH-hosted runner)
+  # ---------------------------------------------------------------------
+  windows-x86_64:
+    needs: check-version
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --target bpa_luau --parallel
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = "package"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item "build\$($env:ADDON_NAME).dll" $out\
+          Copy-Item README.md,LICENSE $out\
+          Copy-Item examples $out\examples -Recurse
+          Get-ChildItem $out
+          Compress-Archive -Path $out\* -DestinationPath "$env:ADDON_NAME-windows-x86_64.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: ${{ env.ADDON_NAME }}-windows-x86_64.zip
+
+  # ---------------------------------------------------------------------
+  # Windows arm64 (MSVC, native GH-hosted runner)
+  # ---------------------------------------------------------------------
+  windows-arm64:
+    needs: check-version
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --target bpa_luau --parallel
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = "package"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item "build\$($env:ADDON_NAME).dll" $out\
+          Copy-Item README.md,LICENSE $out\
+          Copy-Item examples $out\examples -Recurse
+          Get-ChildItem $out
+          Compress-Archive -Path $out\* -DestinationPath "$env:ADDON_NAME-windows-arm64.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-arm64
+          path: ${{ env.ADDON_NAME }}-windows-arm64.zip
+
+  # ---------------------------------------------------------------------
+  # Linux x86_64 (glibc 2.35) - native
   # ---------------------------------------------------------------------
   linux-x86_64:
-    runs-on: ubuntu-22.04 # glibc 2.35, a broadly-compatible baseline
+    needs: check-version
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            liblua${LUA_VERSION}-dev pkg-config zip
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build zip
 
-      - name: "Build (Release settings: -O2, stripped)"
+      - name: Configure
         run: |
-          g++ -std=c++17 -O2 -DNDEBUG -s -shared -fPIC \
-            src/bpa_lua.cpp -o ${BINARY_NAME}.so \
-            $(pkg-config --cflags --libs lua${LUA_VERSION})
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --target bpa_luau -j"$(nproc)"
 
       - name: Package
         run: |
           out=package
           mkdir -p "$out"
-          cp ${BINARY_NAME}.so "$out"/
+          cp build/${ADDON_NAME}.so "$out"/
           cp README.md LICENSE "$out"/
-          (cd "$out" && zip -r "../${BINARY_NAME}-linux-x86_64.zip" .)
+          cp -r examples "$out"/examples
+          (cd "$out" && zip -r "../${ADDON_NAME}-linux-x86_64.zip" .)
 
       - uses: actions/upload-artifact@v4
         with:
           name: linux-x86_64
-          path: ${{ env.BINARY_NAME }}-linux-x86_64.zip
+          path: ${{ env.ADDON_NAME }}-linux-x86_64.zip
 
   # ---------------------------------------------------------------------
-  # Linux aarch64 (glibc) - native GH-hosted arm64 Linux runner (no
-  # cross-compilation needed)
+  # Linux aarch64 (glibc) - native GH-hosted arm64 runner
   # ---------------------------------------------------------------------
   linux-aarch64:
+    needs: check-version
     runs-on: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            liblua${LUA_VERSION}-dev pkg-config zip
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build zip
 
-      - name: "Build (Release settings: -O2, stripped)"
+      - name: Configure
         run: |
-          g++ -std=c++17 -O2 -DNDEBUG -s -shared -fPIC \
-            src/bpa_lua.cpp -o ${BINARY_NAME}.so \
-            $(pkg-config --cflags --libs lua${LUA_VERSION})
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --target bpa_luau -j"$(nproc)"
 
       - name: Package
         run: |
           out=package
           mkdir -p "$out"
-          cp ${BINARY_NAME}.so "$out"/
+          cp build/${ADDON_NAME}.so "$out"/
           cp README.md LICENSE "$out"/
-          (cd "$out" && zip -r "../${BINARY_NAME}-linux-aarch64.zip" .)
+          cp -r examples "$out"/examples
+          (cd "$out" && zip -r "../${ADDON_NAME}-linux-aarch64.zip" .)
 
       - uses: actions/upload-artifact@v4
         with:
           name: linux-aarch64
-          path: ${{ env.BINARY_NAME }}-linux-aarch64.zip
+          path: ${{ env.ADDON_NAME }}-linux-aarch64.zip
 
   # ---------------------------------------------------------------------
-  # macOS arm64 (Apple Silicon / M-series) - native GH-hosted arm64 runner
+  # macOS arm64 (Apple Silicon) - native GH-hosted arm64 runner
   # ---------------------------------------------------------------------
   macos-arm64:
-    runs-on: macos-15 # native Apple Silicon (M-series) runner
+    needs: check-version
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: brew install lua
+        run: brew install ninja
 
-      - name: "Build (Release settings: -O2, stripped)"
+      - name: Configure
         run: |
-          # Homebrew's lua formula installs headers/lib unversioned
-          # (include/lua.h, -llua), not under a lua5.4/ subdir or -llua5.4,
-          # so use pkg-config against its own lua.pc rather than hardcoding
-          # a versioned path.
-          LUA_PREFIX="$(brew --prefix lua)"
-          export PKG_CONFIG_PATH="${LUA_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH}"
-          clang++ -std=c++17 -O2 -DNDEBUG -shared -fPIC -undefined dynamic_lookup \
-            $(pkg-config --cflags --libs lua) \
-            src/bpa_lua.cpp -o ${BINARY_NAME}.so
-          strip -x ${BINARY_NAME}.so
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
+
+      - name: Build
+        run: cmake --build build --target bpa_luau -j"$(sysctl -n hw.ncpu)"
 
       - name: Package
         run: |
           out=package
           mkdir -p "$out"
-          cp ${BINARY_NAME}.so "$out"/
+          cp build/${ADDON_NAME}.so "$out"/
           cp README.md LICENSE "$out"/
-          (cd "$out" && zip -r "../${BINARY_NAME}-macos-arm64.zip" .)
+          cp -r examples "$out"/examples
+          (cd "$out" && zip -r "../${ADDON_NAME}-macos-arm64.zip" .)
 
       - uses: actions/upload-artifact@v4
         with:
           name: macos-arm64
-          path: ${{ env.BINARY_NAME }}-macos-arm64.zip
+          path: ${{ env.ADDON_NAME }}-macos-arm64.zip
 
   # ---------------------------------------------------------------------
   # Publish everything as one GitHub Release
   # ---------------------------------------------------------------------
   release:
     needs:
+      - check-version
+      - windows-x86_64
+      - windows-arm64
       - linux-x86_64
       - linux-aarch64
       - macos-arm64
@@ -158,6 +268,8 @@ jobs:
         with:
           tag_name: ${{ inputs.tag_name }}
           name: ${{ inputs.release_name || inputs.tag_name }}
+          body: ${{ inputs.release_notes }}
+          generate_release_notes: ${{ inputs.release_notes == '' }}
           draft: ${{ inputs.draft }}
           prerelease: ${{ inputs.prerelease }}
           files: artifacts/**/*.zip

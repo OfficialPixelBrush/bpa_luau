@@ -21,6 +21,10 @@ extern "C" {
 namespace bpa {
 namespace {
 
+constexpr const char* ADDON_ID = "bpa_luau";
+constexpr const char* ADDON_NAME = "Luau";
+constexpr const char* ADDON_VERSION = "0.1.0"; // keep in sync with the release tag (checked by CI)
+
 constexpr const char* scriptsDir = "luau";
 
 const bp_api* g_api = nullptr;
@@ -623,11 +627,18 @@ void OnUnload(const bp_api* api, const bp_addon_unload* /*ev*/) {
 } // namespace
 } // namespace bpa
 
-extern "C" bp_addon_info bp_addon(const bp_api* /*api*/) {
+// The host looks this symbol up by name, so it has to be exported explicitly on Windows.
+extern "C"
+#ifdef _WIN32
+    __declspec(dllexport)
+#else
+    __attribute__((visibility("default")))
+#endif
+bp_addon_info bp_addon(const bp_api* /*api*/) {
     return bp_addon_info{
-        "bpa_luau",
-        "Luau",
-        "0.1.1",
+        bpa::ADDON_ID,
+        bpa::ADDON_NAME,
+        bpa::ADDON_VERSION,
         bp_addon_events{
             /* playerJoin   */ bpa::OnPlayerJoin,
             /* playerLeave  */ bpa::OnPlayerLeave,
