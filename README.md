@@ -33,11 +33,17 @@ See `examples/example.luau` for a script that touches every event.
 | ---------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | `log`      | `info(msg)`, `warning(msg)`, `error(msg)`                                                                                     |
 | `server`   | `getPlayerCount()`, `getPlayerAt(index)`, `stop(timeout?)`, `getMsptAverage()`, `getTpsAverage()`, `getVersion()`             |
-| `player`   | `sendMessage(player, msg)`, `kick(player, reason?)`, `getUsername(player)`, `getEntity(player)`                               |
+| `player`   | `sendMessage(player, msg)`, `kick(player, reason?)`, `getUsername(player)`, `getEntity(player)`, `isOperator(player)`         |
 | `entity`   | `getPosition(entity)`, `setPosition(entity, x, y, z)`, `getWorld(entity)`                                                     |
 | `world`    | `getBlock(world, x, y, z)`, `setBlock(world, x, y, z, id, meta)`, `sendBlockUpdate(world, x, y, z, id, meta)`, `getCurrent()` |
 | `data`     | `setPlayer(player, value)`, `getPlayer(player)`                                                                               |
 | `commands` | `execute(sender, command)` returns `boolean`; `sender` is a player handle, or `nil` for no player                             |
+| `file`     | `read(name)`, `write(name, text)`, `append(name, text)`, `remove(name)`, `exists(name)`                                       |
+
+`file.*` only works inside `luau/data/`: names are relative to it, subfolders are created as needed, and absolute
+paths or `..` raise an error. `read` returns the text or `nil`; the others return `true` on success.
+
+`player.isOperator(player)` checks `ops.txt` the same way the server does.
 
 Script callbacks: `OnPlayerJoin`, `OnPlayerLeave`, `OnPlayerChat`, `OnPlayerMove`, `OnItemUse`,
 `OnBlockUse`, `OnBlockBreak`, `OnBlockPlace`, `OnEntityDamage`, `OnServerTick`, `OnCrash`, `OnUnload`.
