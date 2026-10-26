@@ -44,6 +44,13 @@ function OnPlayerChat(playerHandle: Handle, message: string): boolean?
         player.kick(playerHandle, "Asked for it")
     end
 
+    -- Files live in luau/data/ and survive restarts.
+    if message == "!note" and player.isOperator(playerHandle) then
+        file.append("notes/ops.txt", `{player.getUsername(playerHandle)} was here\n`)
+        player.sendMessage(playerHandle, file.read("notes/ops.txt") or "")
+        return false
+    end
+
     return nil
 end
 
