@@ -8,6 +8,7 @@ extern "C" {
 #include <lualib.h>
 #include <luacode.h>
 
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -126,6 +127,11 @@ void pushItemStack(lua_State* L, bp_item_stack item) {
 
 bool readFile(const std::filesystem::path& path, std::string& out);
 
+std::string lower(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
 std::string trim(const std::string& s) {
     const char* space = " \t\r\n";
     size_t start = s.find_first_not_of(space);
@@ -230,15 +236,16 @@ int lua_player_getEntity(lua_State* L) {
     lua_pushlightuserdata(L, entity);
     return 1;
 }
-// The C ABI has no operator check, so this reads ops.txt the way the server does: one name per line, trimmed, exact
-// match. /op and /deop save that file straight away, so it stays current.
+// The C ABI has no operator check, so this reads ops.txt: one name per line, trimmed, ignoring capitals like vanilla
+// b1.7.3 does. /op and /deop save that file straight away, so it stays current.
 int lua_player_isOperator(lua_State* L) {
     bp_player* player = static_cast<bp_player*>(checkHandle(L, 1, "Expected a player handle"));
     const char* username = g_api->player.getUsername(player);
+    const std::string name = username ? lower(username) : "";
     bool op = false;
     std::ifstream in("ops.txt");
-    for (std::string line; username && !op && std::getline(in, line);) {
-        op = trim(line) == username;
+    for (std::string line; !name.empty() && !op && std::getline(in, line);) {
+        op = lower(trim(line)) == name;
     }
     lua_pushboolean(L, op);
     return 1;

@@ -43,7 +43,7 @@ See `examples/example.luau` for a script that touches every event.
 `file.*` only works inside `luau/data/`: names are relative to it, subfolders are created as needed, and absolute
 paths or `..` raise an error. `read` returns the text or `nil`; the others return `true` on success.
 
-`player.isOperator(player)` checks `ops.txt` the same way the server does.
+`player.isOperator(player)` checks `ops.txt`, ignoring capitals like vanilla b1.7.3.
 
 Script callbacks: `OnPlayerJoin`, `OnPlayerLeave`, `OnPlayerChat`, `OnPlayerMove`, `OnItemUse`,
 `OnBlockUse`, `OnBlockBreak`, `OnBlockPlace`, `OnEntityDamage`, `OnServerTick`, `OnCrash`, `OnUnload`.
