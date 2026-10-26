@@ -8,6 +8,7 @@ extern "C" {
 #include <lualib.h>
 #include <luacode.h>
 
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -26,6 +27,7 @@ constexpr const char* ADDON_NAME = "Luau";
 constexpr const char* ADDON_VERSION = "0.1.1"; // keep in sync with the release tag (checked by CI)
 
 constexpr const char* scriptsDir = "luau";
+constexpr const char* dataDir = "luau/data"; // the only folder file.* can touch
 
 const bp_api* g_api = nullptr;
 bp_world* g_world = nullptr; // Best-effort fallback world, kept fresh by any event/call that hands us one.
@@ -123,6 +125,44 @@ void pushItemStack(lua_State* L, bp_item_stack item) {
     lua_pushinteger(L, item.data);  lua_setfield(L, -2, "data");
 }
 
+bool readFile(const std::filesystem::path& path, std::string& out);
+
+std::string lower(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+std::string trim(const std::string& s) {
+    const char* space = " \t\r\n";
+    size_t start = s.find_first_not_of(space);
+    if (start == std::string::npos) return "";
+    return s.substr(start, s.find_last_not_of(space) - start + 1);
+}
+
+// Turns a script's file name into a path inside dataDir, or raises an error. Absolute paths, drive letters and ".."
+// are refused, so a script can't reach anything outside that folder. Subfolders ("logs/today.txt") are fine.
+std::filesystem::path dataPath(lua_State* L, int idx) {
+    const char* name = luaL_checkstring(L, idx);
+    const std::filesystem::path rel = std::filesystem::path(name).lexically_normal();
+    bool ok = *name && !rel.has_root_name() && !rel.has_root_directory() && rel != ".";
+    for (const auto& part : rel) {
+        if (part == "..") ok = false;
+    }
+    if (!ok) luaL_error(L, "'%s' is not a file name inside %s", name, dataDir);
+    return std::filesystem::path(dataDir) / rel;
+}
+
+bool writeDataFile(lua_State* L, std::ios::openmode mode) {
+    const std::filesystem::path path = dataPath(L, 1);
+    size_t len = 0;
+    const char* text = luaL_checklstring(L, 2, &len);
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec); // subfolders are made as needed
+    std::ofstream out(path, std::ios::binary | mode);
+    out.write(text, static_cast<std::streamsize>(len));
+    return static_cast<bool>(out);
+}
+
 // Lua-callable bindings
 extern "C" {
 
@@ -194,6 +234,20 @@ int lua_player_getEntity(lua_State* L) {
     bp_entity* entity = g_api->player.getEntity(player);
     if (!entity) { lua_pushnil(L); return 1; }
     lua_pushlightuserdata(L, entity);
+    return 1;
+}
+// The C ABI has no operator check, so this reads ops.txt: one name per line, trimmed, ignoring capitals like vanilla
+// b1.7.3 does. /op and /deop save that file straight away, so it stays current.
+int lua_player_isOperator(lua_State* L) {
+    bp_player* player = static_cast<bp_player*>(checkHandle(L, 1, "Expected a player handle"));
+    const char* username = g_api->player.getUsername(player);
+    const std::string name = username ? lower(username) : "";
+    bool op = false;
+    std::ifstream in("ops.txt");
+    for (std::string line; !name.empty() && !op && std::getline(in, line);) {
+        op = lower(trim(line)) == name;
+    }
+    lua_pushboolean(L, op);
     return 1;
 }
 
@@ -300,6 +354,36 @@ int lua_commands_execute(lua_State* L) {
     return 1;
 }
 
+// file.* (only inside dataDir, see dataPath)
+int lua_file_read(lua_State* L) {
+    const std::filesystem::path path = dataPath(L, 1);
+    std::string text;
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec) || !readFile(path, text)) { lua_pushnil(L); return 1; }
+    lua_pushlstring(L, text.data(), text.size());
+    return 1;
+}
+int lua_file_write(lua_State* L) {
+    lua_pushboolean(L, writeDataFile(L, std::ios::trunc));
+    return 1;
+}
+int lua_file_append(lua_State* L) {
+    lua_pushboolean(L, writeDataFile(L, std::ios::app));
+    return 1;
+}
+int lua_file_remove(lua_State* L) {
+    const std::filesystem::path path = dataPath(L, 1);
+    std::error_code ec;
+    lua_pushboolean(L, std::filesystem::is_regular_file(path, ec) && std::filesystem::remove(path, ec));
+    return 1;
+}
+int lua_file_exists(lua_State* L) {
+    const std::filesystem::path path = dataPath(L, 1);
+    std::error_code ec;
+    lua_pushboolean(L, std::filesystem::is_regular_file(path, ec));
+    return 1;
+}
+
 } // extern "C"
 
 const luaL_Reg lua_log_fns[] = {
@@ -322,6 +406,7 @@ const luaL_Reg lua_player_fns[] = {
     {"kick", lua_player_kick},
     {"getUsername", lua_player_getUsername},
     {"getEntity", lua_player_getEntity},
+    {"isOperator", lua_player_isOperator},
     {nullptr, nullptr}
 };
 const luaL_Reg lua_entity_fns[] = {
@@ -346,6 +431,14 @@ const luaL_Reg lua_commands_fns[] = {
     {"execute", lua_commands_execute},
     {nullptr, nullptr}
 };
+const luaL_Reg lua_file_fns[] = {
+    {"read", lua_file_read},
+    {"write", lua_file_write},
+    {"append", lua_file_append},
+    {"remove", lua_file_remove},
+    {"exists", lua_file_exists},
+    {nullptr, nullptr}
+};
 
 void registerLib(lua_State* L, const char* name, const luaL_Reg* fns) {
     lua_newtable(L);
@@ -361,6 +454,7 @@ void registerApi(lua_State* L) {
     registerLib(L, "world",  lua_world_fns);
     registerLib(L, "data",   lua_data_fns);
     registerLib(L, "commands", lua_commands_fns);
+    registerLib(L, "file", lua_file_fns);
 }
 
 bool readFile(const std::filesystem::path& path, std::string& out) {
